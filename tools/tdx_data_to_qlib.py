@@ -298,7 +298,7 @@ def export_to_csv(codes: List[str], start_date: str, end_date: str,
             df_exist = pd.read_csv(csv_file)
             if len(df_exist) > 100:
                 success_count += 1
-                print("✓ (缓存)")
+                print("[OK] (缓存)")
                 continue
 
         # 重试获取
@@ -312,7 +312,7 @@ def export_to_csv(codes: List[str], start_date: str, end_date: str,
 
         if df is None or len(df) < 50:
             fail_codes.append(code)
-            print("✗ 数据不足")
+            print("[FAIL] 数据不足")
             continue
 
         # 添加 symbol 和 date 列
@@ -328,7 +328,7 @@ def export_to_csv(codes: List[str], start_date: str, end_date: str,
 
         df.to_csv(csv_file, index=False)
         success_count += 1
-        print(f"✓ {len(df)}条")
+        print(f"[OK] {len(df)}条")
 
         # 避免请求过快
         if i < len(codes) - 1:
@@ -361,17 +361,17 @@ def dump_to_qlib(csv_dir: str, qlib_dir: str, freq: str = "day",
     print(f"CSV 文件: {len(csv_files)} 个")
 
     try:
-        from qlib.scripts.dump_bin import DumpDataAll
+        from scripts.dump_bin import DumpDataAll
     except ImportError:
-        print("错误: 无法导入 qlib.scripts.dump_bin")
-        print("请确保 qlib 已安装: pip install pyqlib")
-        print("或添加 qlib-main 到 Python 路径")
-        # 尝试手动添加路径
-        qlib_path = Path(__file__).parent / "qlib-main"
-        if qlib_path.exists():
-            sys.path.insert(0, str(qlib_path))
-            from qlib.scripts.dump_bin import DumpDataAll
-        else:
+        # 尝试从项目根目录导入
+        project_root = Path(__file__).parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        try:
+            from scripts.dump_bin import DumpDataAll
+        except ImportError:
+            print("错误: 无法导入 scripts.dump_bin")
+            print("请确保在项目根目录下运行")
             return False
 
     dumper = DumpDataAll(

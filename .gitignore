@@ -62,3 +62,9 @@ tags
 
 # Pretrained models
 ./pretrain
+
+# Skill package (auto-generated)
+qlib-factor-zoo-backtest.zip
+
+# Test data (local only)
+tools/test_qlib_data/

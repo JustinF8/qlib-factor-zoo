@@ -57,20 +57,49 @@ qlib-factor-zoo/
 
 ## 快速开始
 
-### 安装
+本项目提供**两种使用方式**，可根据场景灵活选择：
 
-```bash
-# 克隆项目
-git clone https://github.com/YOUR_USERNAME/qlib-factor-zoo.git
-cd qlib-factor-zoo
+---
 
-# 安装依赖
-pip install -e .
-# 或
-pip install pyyaml numpy pandas mlflow redis dill fire lightgbm gym cvxpy pyarrow
+### 方式一：桥接模块（无需安装，快速验证）
+
+直接 import 桥接模块，不安装 qlib，适合本地开发、调试因子公式：
+
+```python
+import sys
+sys.path.insert(0, 'qlib-factor-zoo')
+
+from examples.factor_compute import get_factor_computer, get_available_factors
+
+# 查看可用因子库
+print(get_available_factors())
+
+# 直接调用因子计算
+computer = get_factor_computer("Alpha158")
+factors = computer.compute(dataframe)
+
+# 也可使用其他因子库
+computer_101 = get_factor_computer("Alpha101")
+factors_101 = computer_101.compute(dataframe)
 ```
 
-### 使用六大因子库
+| 优点 | 适用场景 |
+|------|----------|
+| 不需要安装 | 本地开发、调试因子公式 |
+| 直接引用源码，灵活修改 | 快速验证、定制开发 |
+
+---
+
+### 方式二：安装替代原生 qlib（完整回测工作流）
+
+安装 qlib-factor-zoo 替代原生 qlib，与 qlib 回测框架完全兼容：
+
+```bash
+cd qlib-factor-zoo
+pip install -e .
+```
+
+然后在策略中直接使用 `qlib` 命名空间，实际加载的是 factor-zoo 的增强版本：
 
 ```python
 import qlib
@@ -79,7 +108,7 @@ from qlib.config import C
 # 初始化 Qlib
 qlib.init(provider_uri="your_data_path")
 
-# 使用 Alpha158 因子库
+# 使用 Alpha158 因子库（factor-zoo 增强版）
 from qlib.contrib.data.handler import Alpha158
 handler = Alpha158(instruments="csi300", start_time="2023-01-01", end_time="2024-01-01")
 features = handler.fetch()
@@ -88,7 +117,30 @@ features = handler.fetch()
 from qlib.contrib.data.handler import TDXGS
 handler = TDXGS(instruments="csi300", start_time="2023-01-01", end_time="2024-01-01")
 features = handler.fetch()
+
+# 模型训练与回测
+from qlib.contrib.model.pytorch_alstm import ALSTM
+from qlib.contrib.strategy import TopkDropoutStrategy
 ```
+
+| 优点 | 适用场景 |
+|------|----------|
+| 与原生 qlib API 完全兼容 | 生产环境 |
+| 可使用 qlib 完整回测框架、数据处理器 | 完整策略回测 |
+
+---
+
+### 两种方式对比
+
+| 对比维度 | 方式一 (桥接) | 方式二 (安装替代) |
+|----------|-------------|-----------------|
+| 安装 | 不需要 | `pip install -e .` |
+| 使用方式 | `from factor_compute import ...` | `from qlib.contrib.data.handler import ...` |
+| 回测框架 | 手动调用 | 可用 qlib 完整回测 |
+| 灵活性 | 高，直接改源码 | 中，需要重装生效 |
+| 适合场景 | 快速验证、定制开发 | 完整策略、生产回测 |
+
+> **核心价值**：本项目在原生 qlib 基础上增加了**六大因子库**（Alpha360、Alpha158、Alpha101、GTJA191、TDXGS、JQ110），安装后可以无缝替换原生 qlib，所有策略代码不需要改动就能用上这些因子。
 
 ### 通达信数据转换
 

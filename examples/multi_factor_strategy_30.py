@@ -2,8 +2,9 @@
 """
 30因子机器学习多因子策略
 从六大因子库中各选取5个最不相关的因子，组成30因子组合。
-数据源：AKShare
-模型：LightGBM + 截面Rank IC加权
+因子定义从项目自身的因子库组件动态加载，不硬编码因子公式。
+数据源：通达信TQ / AKShare / 模拟数据
+模型：LightGBM
 
 六大因子库来源：
   Alpha360  - 原始价格/成交量时间序列（最近60天）
@@ -12,10 +13,6 @@
   Alpha101  - WorldQuant 101 Alpha因子
   GTJA191   - 国泰君安191因子
   TDXGS     - 通达信/同花顺技术指标因子
-
-选取原则：
-  每个库选5个分属不同类别、相关性最低的因子，
-  覆盖动量、波动、量价、形态、趋势、情绪等不同维度。
 
 依赖安装：
   pip install akshare pandas numpy scikit-learn lightgbm joblib
@@ -31,79 +28,28 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
+import os
 import akshare as ak
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
 import lightgbm as lgb
-import joblib
-import os
 
 # ============================================================
-# 0. 30因子定义（每个库5个，分属不同类别）
+# 0. 从因子库组件动态加载因子定义（不硬编码）
 # ============================================================
-# 这些因子名来自六大因子库的实际因子名称，
-# 但由于 AKShare 不直接支持 Qlib 表达式引擎，
-# 我们在此使用 pandas/numpy 实现等价计算。
+# 因子定义来自项目 qlib/contrib/data/ 下的六大因子库 Handler
+# factor_compute 模块提供桥接：从 Handler 读取因子名 → pandas 向量化计算
 
-FACTOR_30 = {
-    # ----------------------------------------------------------
-    # Alpha360: 原始价格/成交量序列（选不同时间尺度、不同字段）
-    # ----------------------------------------------------------
-    "A360_CLOSE5":   ("Alpha360", "动量", "5日收盘价/当日收盘价"),
-    "A360_OPEN20":   ("Alpha360", "跳空", "20日前开盘价/当日收盘价"),
-    "A360_HIGH10":   ("Alpha360", "阻力", "10日最高价/当日收盘价"),
-    "A360_LOW30":    ("Alpha360", "支撑", "30日最低价/当日收盘价"),
-    "A360_VOLUME15": ("Alpha360", "量能", "15日前成交量/当日成交量"),
+from factor_compute import (
+    _get_factor_names_from_handlers,
+    select_30_factors,
+    compute_factors_from_library,
+)
 
-    # ----------------------------------------------------------
-    # Alpha158: K线形态 + 滚动统计（选不同窗口、不同算子）
-    # ----------------------------------------------------------
-    "A158_KLEN":     ("Alpha158", "波动", "K线实体长度 (high-low)/open"),
-    "A158_BETA20":   ("Alpha158", "趋势", "20日价格斜率"),
-    "A158_CORR20":   ("Alpha158", "量价", "20日价量相关系数"),
-    "A158_RSV10":    ("Alpha158", "位置", "10日RSV (收盘价在区间位置)"),
-    "A158_VSTD10":   ("Alpha158", "量波", "10日成交量波动率"),
-
-    # ----------------------------------------------------------
-    # JQ110: 动量/情绪/技术/风险/风格（各选一个类别）
-    # ----------------------------------------------------------
-    "JQ110_ROC_020": ("JQ110", "动量", "20日变动率"),
-    "JQ110_VR_026":  ("JQ110", "情绪", "26日容量比率(VR)"),
-    "JQ110_MACD_DIF":("JQ110", "技术", "MACD快慢线差值"),
-    "JQ110_VAR_020": ("JQ110", "风险", "20日收益方差"),
-    "JQ110_BETA_060":("JQ110", "风格", "60日Beta系数"),
-
-    # ----------------------------------------------------------
-    # Alpha101: WorldQuant Alpha（选不同类型的alpha公式）
-    # ----------------------------------------------------------
-    "ALPHA001":      ("Alpha101", "反转", "(-1*Corr(rank(Delta(log(volume),1)),rank((close-open)/open),6))"),
-    "ALPHA012":      ("Alpha101", "量价背离", "sign(delta(volume,1))*(-1*delta(close,1))"),
-    "ALPHA028":      ("Alpha101", "规模", "scale(correlation(adv20,low,5))+(high+low)/2)-close"),
-    "ALPHA046":      ("Alpha101", "日内", "(close+high+low)/3*close)/((close+high+low)/3*close).shift(20)"),
-    "ALPHA083":      ("Alpha101", "时序", "((-1 * rank((close - Max(high, 5)))))"),
-
-    # ----------------------------------------------------------
-    # GTJA191: 国泰君安（选不同类别）
-    # ----------------------------------------------------------
-    "GTJA001":       ("GTJA191", "动量", "(-1 * CORR(RANK(DELTA(LOG(VOLUME),1)),RANK((CLOSE-OPEN)/OPEN),6))"),
-    "GTJA032":       ("GTJA191", "波动", "scale(((sum(close,7)/7)-close))+(20*correlation(vwap,delay(close,5),230))"),
-    "GTJA052":       ("GTJA191", "量价", "sum(((-1 * ts_min(low, 5)) + delay(ts_min(low, 5), 5))) * rank(corr(sum(return, 3), sum(return, 5), 3))"),
-    "GTJA101":       ("GTJA191", "反转", "(close-open)/(high-low+0.001)"),
-    "GTJA155":       ("GTJA191", "统计", "correlation(open,close,10)+mean(close,10)-std(close,10)"),
-
-    # ----------------------------------------------------------
-    # TDXGS: 通达信技术指标（选不同指标类型）
-    # ----------------------------------------------------------
-    "TDXGS_RSI_14":  ("TDXGS", "超买超卖", "14日RSI相对强弱"),
-    "TDXGS_CCI_20":  ("TDXGS", "通道", "20日CCI商品通道指数"),
-    "TDXGS_ATR_14":  ("TDXGS", "波幅", "14日ATR平均真实波幅"),
-    "TDXGS_BOLL_UP_20": ("TDXGS", "布林", "20日布林上轨/收盘价"),
-    "TDXGS_EMA_20":  ("TDXGS", "均线", "20日EMA/收盘价"),
-}
+# 运行时动态获取 FACTOR_30
+FACTOR_30 = None  # 将在 main() 中初始化
 
 # ============================================================
 # 1. 数据获取模块（AKShare）
@@ -267,245 +213,31 @@ def build_universe_data(codes, start_date, end_date):
 
 
 # ============================================================
-# 2. 因子计算模块
+# 2. 因子计算模块（从因子库组件动态加载）
 # ============================================================
 
-def compute_factors(df):
-    """计算30个因子（pandas/numpy实现，等价于Qlib表达式）"""
-    print("  排序数据...", flush=True)
-    df = df.copy()
-    df = df.sort_values(["code", "date"]).reset_index(drop=True)
+def compute_factors(df, factor_selections=None):
+    """计算因子（使用 factor_compute 桥接模块，不硬编码公式）
 
-    # 按股票分组计算
-    grouped = df.groupby("code")
+    因子定义从 qlib/contrib/data/ 下六大因子库的 get_feature_config() 动态获取，
+    因子计算使用 pandas 向量化实现，不依赖 Qlib 初始化。
 
-    # --- 辅助函数 ---
-    def _shift(series, n):
-        return series.groupby(df["code"]).shift(n)
+    Parameters
+    ----------
+    df : pd.DataFrame
+        包含 date, code, open, close, high, low, volume 列
+    factor_selections : dict, optional
+        {factor_name: (library, category, description)}
 
-    def _rolling(series, window, func):
-        return series.groupby(df["code"]).rolling(window, min_periods=2).apply(func, raw=True).reset_index(level=0, drop=True)
+    Returns
+    -------
+    df : pd.DataFrame
+    """
+    if factor_selections is None:
+        global FACTOR_30
+        factor_selections = FACTOR_30
 
-    # ============ Alpha360 因子 (5个) ============
-    print("  [Alpha360] 计算中...", flush=True)
-    # A360_CLOSE5: 5日前收盘价/当日收盘价
-    df["A360_CLOSE5"] = df.groupby("code")["close"].shift(5) / (df["close"] + 1e-12)
-
-    # A360_OPEN20: 20日前开盘价/当日收盘价
-    df["A360_OPEN20"] = df.groupby("code")["open"].shift(20) / (df["close"] + 1e-12)
-
-    # A360_HIGH10: 10日前最高价/当日收盘价
-    df["A360_HIGH10"] = df.groupby("code")["high"].shift(10) / (df["close"] + 1e-12)
-
-    # A360_LOW30: 30日前最低价/当日收盘价
-    df["A360_LOW30"] = df.groupby("code")["low"].shift(30) / (df["close"] + 1e-12)
-
-    # A360_VOLUME15: 15日前成交量/当日成交量
-    df["A360_VOLUME15"] = df.groupby("code")["volume"].shift(15) / (df["volume"] + 1e-12)
-
-    # ============ Alpha158 因子 (5个) ============
-    print("  [Alpha158] 计算中...", flush=True)
-    # A158_KLEN: K线实体长度 (high-low)/open
-    df["A158_KLEN"] = (df["high"] - df["low"]) / (df["open"] + 1e-12)
-
-    # A158_BETA20: 20日价格斜率 (用线性回归斜率近似)
-    def _slope(x):
-        if len(x) < 2:
-            return 0
-        t = np.arange(len(x))
-        slope = np.polyfit(t, x, 1)[0]
-        return slope / (np.mean(x) + 1e-12)
-    df["A158_BETA20"] = _rolling(df["close"], 20, _slope)
-
-    # A158_CORR20: 20日价量相关系数
-    def _corr_20(close_win, vol_win):
-        c = np.array(close_win)
-        v = np.array(vol_win)
-        if len(c) < 5 or np.std(c) < 1e-12 or np.std(v) < 1e-12:
-            return 0
-        return np.corrcoef(c, v)[0, 1]
-
-    corr_values = []
-    for code in df["code"].unique():
-        mask = df["code"] == code
-        sub = df.loc[mask, ["close", "volume"]]
-        r = sub["close"].rolling(20, min_periods=5)
-        r2 = sub["volume"].rolling(20, min_periods=5)
-        corr_list = []
-        for i in range(len(sub)):
-            if i < 4:
-                corr_list.append(0)
-            else:
-                ci = sub["close"].iloc[max(0,i-19):i+1].values
-                vi = sub["volume"].iloc[max(0,i-19):i+1].values
-                if np.std(ci) > 1e-12 and np.std(vi) > 1e-12:
-                    corr_list.append(np.corrcoef(ci, vi)[0, 1])
-                else:
-                    corr_list.append(0)
-        df.loc[mask, "A158_CORR20"] = corr_list
-
-    # A158_RSV10: 10日RSV (close-min_low)/(max_high-min_low)
-    roll_high = df.groupby("code")["high"].rolling(10, min_periods=3).max().reset_index(level=0, drop=True)
-    roll_low = df.groupby("code")["low"].rolling(10, min_periods=3).min().reset_index(level=0, drop=True)
-    df["A158_RSV10"] = (df["close"] - roll_low) / (roll_high - roll_low + 1e-12)
-
-    # A158_VSTD10: 10日成交量波动率
-    vol_std = df.groupby("code")["volume"].rolling(10, min_periods=3).std().reset_index(level=0, drop=True)
-    vol_mean = df.groupby("code")["volume"].rolling(10, min_periods=3).mean().reset_index(level=0, drop=True)
-    df["A158_VSTD10"] = vol_std / (vol_mean + 1e-12)
-
-    # ============ JQ110 因子 (5个) ============
-    print("  [JQ110] 计算中...", flush=True)
-    # JQ110_ROC_020: 20日变动率
-    close_20 = df.groupby("code")["close"].shift(20)
-    df["JQ110_ROC_020"] = (df["close"] - close_20) / (close_20 + 1e-12)
-
-    # JQ110_VR_026: 26日容量比率
-    def _calc_vr(close, volume, n=26):
-        result = pd.Series(0.0, index=close.index)
-        for i in range(n, len(close)):
-            up_vol = volume.iloc[i-n:i][close.iloc[i-n:i] > close.iloc[i-n:i].shift(1)].sum()
-            dn_vol = volume.iloc[i-n:i][close.iloc[i-n:i] < close.iloc[i-n:i].shift(1)].sum()
-            eq_vol = volume.iloc[i-n:i][close.iloc[i-n:i] == close.iloc[i-n:i].shift(1)].sum()
-            result.iloc[i] = (up_vol + 0.5 * eq_vol) / (dn_vol + 0.5 * eq_vol + 1e-12)
-        return result
-
-    vr_values = []
-    for code in df["code"].unique():
-        mask = df["code"] == code
-        sub = df.loc[mask]
-        vr_values.append(_calc_vr(sub["close"], sub["volume"], 26))
-    df["JQ110_VR_026"] = pd.concat(vr_values)
-
-    # JQ110_MACD_DIF: MACD快慢线差值 (EMA12-EMA26)
-    ema12 = df.groupby("code")["close"].transform(lambda x: x.ewm(span=12, adjust=False).mean())
-    ema26 = df.groupby("code")["close"].transform(lambda x: x.ewm(span=26, adjust=False).mean())
-    df["JQ110_MACD_DIF"] = ema12 - ema26
-
-    # JQ110_VAR_020: 20日收益方差
-    ret = df.groupby("code")["close"].pct_change()
-    df["JQ110_VAR_020"] = ret.groupby(df["code"]).rolling(20, min_periods=5).var().reset_index(level=0, drop=True)
-
-    # JQ110_BETA_060: 60日Beta (对沪深300收益率回归)
-    def _calc_beta(code_ret, mkt_ret, window=60):
-        result = pd.Series(0.0, index=code_ret.index)
-        for i in range(window, len(code_ret)):
-            x = mkt_ret.iloc[i-window:i].values
-            y = code_ret.iloc[i-window:i].values
-            mask = ~(np.isnan(x) | np.isnan(y))
-            if mask.sum() < 10:
-                continue
-            cov = np.cov(x[mask], y[mask])
-            if cov[0, 0] > 1e-12:
-                result.iloc[i] = cov[0, 1] / cov[0, 0]
-        return result
-
-    # 用等权市场收益率近似
-    mkt_ret = ret.groupby(df["date"]).mean()
-    mkt_ret_aligned = df["date"].map(mkt_ret)
-    beta_values = []
-    for code in df["code"].unique():
-        mask = df["code"] == code
-        beta_values.append(_calc_beta(ret[mask], mkt_ret_aligned[mask], 60))
-    df["JQ110_BETA_060"] = pd.concat(beta_values)
-
-    # ============ Alpha101 因子 (5个) ============
-    print("  [Alpha101] 计算中...", flush=True)
-    # ALPHA001: (-1*Corr(rank(Delta(log(volume),1)),rank((close-open)/open),6))
-    log_vol = np.log(df["volume"] + 1)
-    delta_log_vol = log_vol.groupby(df["code"]).diff(1)
-    rank_delta_vol = delta_log_vol.groupby(df["code"]).rank(pct=True)
-    intraday_ret = (df["close"] - df["open"]) / (df["open"] + 1e-12)
-    rank_intraday = intraday_ret.groupby(df["code"]).rank(pct=True)
-
-    def _rolling_corr(a, b, window):
-        result = pd.Series(0.0, index=a.index)
-        for code in df["code"].unique():
-            mask = df["code"] == code
-            corr_vals = a[mask].rolling(window, min_periods=3).corr(b[mask])
-            corr_vals = corr_vals.fillna(0.0).astype(float)
-            result[mask] = corr_vals
-        return result
-
-    df["ALPHA001"] = (-1.0 * _rolling_corr(rank_delta_vol, rank_intraday, 6)).astype(float)
-
-    # ALPHA012: sign(delta(volume,1))*(-1*delta(close,1))
-    delta_vol = df.groupby("code")["volume"].diff(1)
-    delta_close = df.groupby("code")["close"].diff(1)
-    df["ALPHA012"] = (np.sign(delta_vol) * (-1.0 * delta_close)).astype(float)
-
-    # ALPHA028: (high+low)/2 - close + scale(corr(adv20,low,5))
-    adv20 = df.groupby("code")["volume"].rolling(20, min_periods=5).mean().reset_index(level=0, drop=True)
-    corr_adv_low = _rolling_corr(adv20, df["low"], 5)
-    df["ALPHA028"] = (((df["high"] + df["low"]) / 2.0 - df["close"]) + corr_adv_low).astype(float)
-
-    # ALPHA046: (close/(close_20) - 1)
-    close_20_shift = df.groupby("code")["close"].shift(20)
-    df["ALPHA046"] = (df["close"] / (close_20_shift + 1e-12) - 1.0).astype(float)
-
-    # ALPHA083: (-1 * rank((close - Max(high, 5))))
-    df["ALPHA083"] = df.groupby("code")["close"].rank(pct=True).astype(float)
-
-    # ============ GTJA191 因子 (5个) ============
-    print("  [GTJA191] 计算中...", flush=True)
-    # GTJA001: (-1 * corr(rank(delta(log(vol),1)), rank(intraday_ret), 6))
-    df["GTJA001"] = df["ALPHA001"].astype(float)  # 与ALPHA001公式相同
-
-    # GTJA032: scale((MA(close,7)-close)) + 20*corr(vwap, delay(close,5), 230)
-    ma7 = df.groupby("code")["close"].rolling(7, min_periods=3).mean().reset_index(level=0, drop=True)
-    df["GTJA032"] = ((ma7 - df["close"]) / (df["close"] + 1e-12)).astype(float)
-
-    # GTJA101: (close-open)/(high-low+0.001)
-    df["GTJA101"] = ((df["close"] - df["open"]) / (df["high"] - df["low"] + 0.001)).astype(float)
-
-    # GTJA155: MA(close,10)+STD(close,10)
-    ma10 = df.groupby("code")["close"].rolling(10, min_periods=3).mean().reset_index(level=0, drop=True)
-    std10 = df.groupby("code")["close"].rolling(10, min_periods=3).std().reset_index(level=0, drop=True)
-    df["GTJA155"] = ((ma10 + std10) / (df["close"] + 1e-12)).astype(float)
-
-    # GTJA052: 简化版 - 20日最低价距离
-    min_low_20 = df.groupby("code")["low"].rolling(20, min_periods=5).min().reset_index(level=0, drop=True)
-    df["GTJA052"] = ((df["close"] - min_low_20) / (min_low_20 + 1e-12)).astype(float)
-
-    # ============ TDXGS 因子 (5个) ============
-    print("  [TDXGS] 计算中...", flush=True)
-    # TDXGS_RSI_14: 14日RSI
-    delta = df.groupby("code")["close"].diff(1)
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.groupby(df["code"]).rolling(14, min_periods=5).mean().reset_index(level=0, drop=True)
-    avg_loss = loss.groupby(df["code"]).rolling(14, min_periods=5).mean().reset_index(level=0, drop=True)
-    rs = avg_gain / (avg_loss + 1e-12)
-    df["TDXGS_RSI_14"] = (100.0 - 100.0 / (1.0 + rs)).astype(float)
-
-    # TDXGS_CCI_20: 20日CCI (典型价-均线)/(0.015*平均偏差)
-    tp = (df["high"] + df["low"] + df["close"]) / 3.0
-    ma_tp = tp.groupby(df["code"]).rolling(20, min_periods=5).mean().reset_index(level=0, drop=True)
-    mad_tp = tp.groupby(df["code"]).rolling(20, min_periods=5).apply(
-        lambda x: float(np.mean(np.abs(x - np.mean(x)))), raw=True
-    ).reset_index(level=0, drop=True)
-    df["TDXGS_CCI_20"] = ((tp - ma_tp) / (0.015 * mad_tp + 1e-12)).astype(float)
-
-    # TDXGS_ATR_14: 14日ATR/收盘价
-    tr1 = df["high"] - df["low"]
-    tr2 = abs(df["high"] - df.groupby("code")["close"].shift(1))
-    tr3 = abs(df["low"] - df.groupby("code")["close"].shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr14 = tr.groupby(df["code"]).rolling(14, min_periods=3).mean().reset_index(level=0, drop=True)
-    df["TDXGS_ATR_14"] = (atr14 / (df["close"] + 1e-12)).astype(float)
-
-    # TDXGS_BOLL_UP_20: 20日布林上轨/收盘价
-    ma20 = df.groupby("code")["close"].rolling(20, min_periods=5).mean().reset_index(level=0, drop=True)
-    std20 = df.groupby("code")["close"].rolling(20, min_periods=5).std().reset_index(level=0, drop=True)
-    boll_up = ma20 + 2.0 * std20
-    df["TDXGS_BOLL_UP_20"] = (boll_up / (df["close"] + 1e-12)).astype(float)
-
-    # TDXGS_EMA_20: 20日EMA/收盘价
-    ema20 = df.groupby("code")["close"].transform(lambda x: x.ewm(span=20, adjust=False).mean())
-    df["TDXGS_EMA_20"] = (ema20 / (df["close"] + 1e-12)).astype(float)
-
-    print("  30因子计算完成!", flush=True)
-    return df
+    return compute_factors_from_library(df, factor_selections)
 
 
 # ============================================================
@@ -525,9 +257,12 @@ def compute_labels(df, forward_period=5):
     return df
 
 
-def prepare_features(df):
+def prepare_features(df, factor_selections=None):
     """准备特征矩阵，处理 inf/NaN"""
-    factor_names = list(FACTOR_30.keys())
+    if factor_selections is None:
+        global FACTOR_30
+        factor_selections = FACTOR_30
+    factor_names = list(factor_selections.keys())
 
     # 检查因子是否都存在
     available = [f for f in factor_names if f in df.columns]
@@ -535,8 +270,8 @@ def prepare_features(df):
     if missing:
         print(f"警告：以下因子缺失: {missing}")
 
-    # 删除含NaN的行
-    feature_df = df[["date", "code"] + available + ["label", "label_cls"]].copy()
+    # 删除含NaN的行（保留close列用于回测时计算真实日收益）
+    feature_df = df[["date", "code", "close"] + available + ["label", "label_cls"]].copy()
     feature_df = feature_df.dropna()
 
     # 处理 inf 值：将 inf 替换为 NaN 再删除
@@ -627,8 +362,12 @@ def train_lightgbm_classifier(X_train, y_train, X_val, y_val):
     return model
 
 
-def evaluate_model(model, X_test, y_test, y_cls_test, scaler, factor_names):
+def evaluate_model(model, X_test, y_test, y_cls_test, scaler, factor_names, factor_selections=None):
     """评估模型并输出结果"""
+    if factor_selections is None:
+        global FACTOR_30
+        factor_selections = FACTOR_30
+
     # 预测
     y_pred_reg = model.predict(X_test)
 
@@ -654,25 +393,45 @@ def evaluate_model(model, X_test, y_test, y_cls_test, scaler, factor_names):
     print(f"  Accuracy:  {accuracy:.2%}")
     print(f"\n  Top 10 重要因子:")
     for _, row in importance.head(10).iterrows():
-        src = FACTOR_30.get(row["factor"], ("?", "?"))
-        print(f"    {row['factor']:20s}  [{src[0]:10s}] [{src[1]:6s}] importance={row['importance']:.0f}")
+        src = factor_selections.get(row["factor"], ("?", "?", ""))
+        print(f"    {row['factor']:25s}  [{src[0]:10s}] [{src[1]:8s}] importance={row['importance']:.0f}")
 
     return importance
 
 
-def backtest_simple(model, df_test, factor_names, scaler, top_k=10):
-    """简单回测：每日选预测收益最高的top_k只股票等权持有"""
+def backtest_simple(model, df_test, factor_names, scaler, top_k=10, forward_period=5):
+    """简单回测：每日选预测收益最高的top_k只股票等权持有
+
+    关键修复：
+    1. 使用真实的每日收益率(close.pct_change)而非label(未来N日收益率)
+       label是未来forward_period日的总收益，直接当成日收益会导致前视偏差和收益高估
+    2. 将5日label拆分为约等于日收益: daily_ret ≈ label / forward_period
+       但更准确的方式是直接用单日pct_change
+    """
     X = scaler.transform(df_test[factor_names].values)
     df_test = df_test.copy()
     df_test["pred"] = model.predict(X)
 
+    # 计算真实的单日收益率：当日收盘买入，次日收盘卖出
+    # pct_change() 得到的是当日相对前一日的收益率
+    # shift(-1) 将其转换为"下一日"的收益率（即持仓1天的真实收益）
+    df_test = df_test.sort_values(["code", "date"])
+    df_test["daily_real_ret"] = df_test.groupby("code")["close"].pct_change().shift(-1)
+    # 例如: date=1月3日, pct_change得到(1月3日close/1月2日close-1)
+    #       shift(-1)后变成(1月4日close/1月3日close-1)
+    #       这就是1月3日收盘买入、1月4日收盘卖出的真实日收益
+
     # 按日期分组，选top_k
     portfolio = []
     for date, group in df_test.groupby("date"):
-        n_pick = min(top_k, len(group))
-        top = group.nlargest(n_pick, "pred")
-        daily_ret = top["label"].mean()  # 等权
-        benchmark_ret = group["label"].mean()  # 基准：等权持有全部
+        # 筛选有真实日收益的股票
+        valid = group.dropna(subset=["daily_real_ret"])
+        if len(valid) < 3:
+            continue
+        n_pick = min(top_k, len(valid))
+        top = valid.nlargest(n_pick, "pred")
+        daily_ret = top["daily_real_ret"].mean()  # 等权，使用真实日收益
+        benchmark_ret = valid["daily_real_ret"].mean()  # 基准：等权持有全部
         portfolio.append({
             "date": date,
             "daily_return": daily_ret,
@@ -703,6 +462,7 @@ def backtest_simple(model, df_test, factor_names, scaler, top_k=10):
     print("\n" + "=" * 70)
     print(f"  回测结果（测试期 {port_df['date'].iloc[0].date()} ~ {port_df['date'].iloc[-1].date()}）")
     print(f"  每日选 Top{top_k} 等权 | 股票池 {df_test['code'].nunique()} 只")
+    print(f"  注意: 收益基于真实单日收益率(close.pct_change)，非label(未来{forward_period}日)")
     print("=" * 70)
     print(f"  {'':20s} {'策略':>12s} {'基准(等权)':>12s}")
     print(f"  {'累计收益:':20s} {total_ret:>11.2%}  {bm_total_ret:>11.2%}")
@@ -730,6 +490,13 @@ def build_universe_data_from_tdx(codes, start_date, end_date):
     tdx_path = 'd:/zd_zyb(x64 26011715)GA/PYPlugins/user'
     if tdx_path not in sys.path:
         sys.path.append(tdx_path)
+
+    # 优先使用已保存的整体缓存文件（100只 > 15只）
+    for bulk_cache in ["./tdx_data_100.parquet", "./tdx_data_15.parquet"]:
+        if os.path.exists(bulk_cache):
+            df = pd.read_parquet(bulk_cache)
+            print(f"  从缓存加载: {len(df)} 条记录, {df['code'].nunique()} 只股票")
+            return df
 
     # 缓存目录
     cache_dir = "./tdx_cache"
@@ -892,23 +659,38 @@ def build_universe_data_from_tdx(codes, start_date, end_date):
 # ============================================================
 
 def main(use_synthetic=False, use_tdx=False):
+    global FACTOR_30
+
     data_source = "通达信TQ本地" if use_tdx else ("模拟数据" if use_synthetic else "AKShare")
     print("=" * 70)
     print("  30因子机器学习多因子策略")
     print("  六大因子库 × 5因子 = 30因子组合")
     print(f"  模型: LightGBM | 数据: {data_source}")
+    print("  因子来源: 项目因子库组件 (qlib/contrib/data/)")
     print("=" * 70)
+
+    # ---------- Step 0: 从因子库动态加载因子定义 ----------
+    print("\n[Step 0] 从因子库组件加载因子定义...")
+    try:
+        factor_map = _get_factor_names_from_handlers()
+        for lib, names in factor_map.items():
+            print(f"  {lib:12s}: {len(names)} 个因子可用")
+        FACTOR_30 = select_30_factors(factor_map)
+        if not FACTOR_30 or len(FACTOR_30) < 10:
+            print("  警告: 因子库加载不足，使用内置备选因子集")
+            FACTOR_30 = _get_fallback_factors()
+    except Exception as e:
+        print(f"  警告: 因子库加载失败 ({e})，使用内置备选因子集")
+        FACTOR_30 = _get_fallback_factors()
 
     # ---------- 数据参数 ----------
     start_date = "2023-01-01"
     end_date = "2026-05-31"
     train_end = "2025-03-31"  # 训练集截止（2023-01 ~ 2025-03）
-    # 测试期：2025-04-01 ~ 2026-05-31
 
     # ---------- Step 1: 获取数据 ----------
     print("\n[Step 1] 获取股票数据...")
     codes = fetch_stock_pool()
-    # 扩大股票池到100只
     codes = codes[:100]
     print(f"使用前{len(codes)}只股票")
 
@@ -923,8 +705,8 @@ def main(use_synthetic=False, use_tdx=False):
     print(f"数据范围: {df['date'].min().date()} ~ {df['date'].max().date()}")
 
     # ---------- Step 2: 计算因子 ----------
-    print("\n[Step 2] 计算30个因子...")
-    df = compute_factors(df)
+    print(f"\n[Step 2] 计算 {len(FACTOR_30)} 个因子（使用因子库定义）...")
+    df = compute_factors(df, FACTOR_30)
 
     # ---------- Step 3: 计算标签 ----------
     print("\n[Step 3] 计算标签（未来5日收益率）...")
@@ -932,7 +714,7 @@ def main(use_synthetic=False, use_tdx=False):
 
     # ---------- Step 4: 准备特征 ----------
     print("\n[Step 4] 准备特征矩阵...")
-    feature_df, factor_names = prepare_features(df)
+    feature_df, factor_names = prepare_features(df, FACTOR_30)
 
     # 划分训练/测试集
     train_mask = feature_df["date"] <= train_end
@@ -940,7 +722,6 @@ def main(use_synthetic=False, use_tdx=False):
 
     X_train = feature_df.loc[train_mask, factor_names].values
     y_train = feature_df.loc[train_mask, "label"].values
-    y_cls_train = feature_df.loc[train_mask, "label_cls"].values
 
     X_test = feature_df.loc[test_mask, factor_names].values
     y_test = feature_df.loc[test_mask, "label"].values
@@ -955,7 +736,6 @@ def main(use_synthetic=False, use_tdx=False):
 
     # ---------- Step 5: 训练模型 ----------
     print("\n[Step 5] 训练 LightGBM 模型...")
-    # 进一步划分训练/验证
     split_idx = int(len(X_train_scaled) * 0.8)
     X_tr, X_val = X_train_scaled[:split_idx], X_train_scaled[split_idx:]
     y_tr, y_val = y_train[:split_idx], y_train[split_idx:]
@@ -964,7 +744,7 @@ def main(use_synthetic=False, use_tdx=False):
 
     # ---------- Step 6: 评估 ----------
     print("\n[Step 6] 评估模型...")
-    importance = evaluate_model(model, X_test_scaled, y_test, y_cls_test, scaler, factor_names)
+    importance = evaluate_model(model, X_test_scaled, y_test, y_cls_test, scaler, factor_names, FACTOR_30)
 
     # ---------- Step 7: 回测 ----------
     print("\n[Step 7] 简单回测...")
@@ -976,13 +756,49 @@ def main(use_synthetic=False, use_tdx=False):
     print("=" * 70)
     source_count = {}
     for f in factor_names:
-        src = FACTOR_30.get(f, ("?", "?"))[0]
+        src = FACTOR_30.get(f, ("?", "?", ""))[0]
         source_count[src] = source_count.get(src, 0) + 1
     for src, cnt in sorted(source_count.items()):
         print(f"  {src:12s}: {cnt} 个因子")
 
     print("\n[完成] 策略运行结束！")
     return model, scaler, importance, port_df
+
+
+def _get_fallback_factors():
+    """内置备选因子集（当因子库无法加载时使用）"""
+    return {
+        "A360_CLOSE5":   ("Alpha360", "动量", "5日收盘价回溯"),
+        "A360_OPEN20":   ("Alpha360", "跳空", "20日开盘价回溯"),
+        "A360_HIGH10":   ("Alpha360", "阻力", "10日最高价回溯"),
+        "A360_LOW30":    ("Alpha360", "支撑", "30日最低价回溯"),
+        "A360_VOLUME15": ("Alpha360", "量能", "15日成交量回溯"),
+        "A158_KLEN":     ("Alpha158", "波动", "K线实体长度"),
+        "A158_BETA20":   ("Alpha158", "趋势", "20日价格斜率"),
+        "A158_CORR20":   ("Alpha158", "量价", "20日价量相关系数"),
+        "A158_RSV10":    ("Alpha158", "位置", "10日RSV"),
+        "A158_VSTD10":   ("Alpha158", "量波", "10日成交量波动率"),
+        "JQ110_ROC_020": ("JQ110", "动量", "20日变动率"),
+        "JQ110_VR_026":  ("JQ110", "情绪", "26日容量比率"),
+        "JQ110_MACD_DIF":("JQ110", "技术", "MACD快慢线差值"),
+        "JQ110_VAR_020": ("JQ110", "风险", "20日收益方差"),
+        "JQ110_BETA_060":("JQ110", "风格", "60日Beta系数"),
+        "ALPHA001":      ("Alpha101", "反转", "Alpha101 #001"),
+        "ALPHA012":      ("Alpha101", "量价背离", "Alpha101 #012"),
+        "ALPHA028":      ("Alpha101", "规模", "Alpha101 #028"),
+        "ALPHA046":      ("Alpha101", "日内", "Alpha101 #046"),
+        "ALPHA083":      ("Alpha101", "时序", "Alpha101 #083"),
+        "GTJA001":       ("GTJA191", "反转", "GTJA #001"),
+        "GTJA032":       ("GTJA191", "波动", "GTJA #032"),
+        "GTJA052":       ("GTJA191", "量价", "GTJA #052"),
+        "GTJA101":       ("GTJA191", "形态", "GTJA #101"),
+        "GTJA155":       ("GTJA191", "统计", "GTJA #155"),
+        "TDXGS_RSI_14":  ("TDXGS", "RSI", "14日RSI"),
+        "TDXGS_CCI_20":  ("TDXGS", "CCI", "20日CCI"),
+        "TDXGS_ATR_14":  ("TDXGS", "ATR", "14日ATR"),
+        "TDXGS_BOLL_UP_20": ("TDXGS", "BOLL", "20日布林上轨"),
+        "TDXGS_EMA_20":  ("TDXGS", "EMA", "20日EMA"),
+    }
 
 
 if __name__ == "__main__":

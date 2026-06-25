@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.so
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# Data files (too large / local only)
+*.pkl
+*.hd5
+*.parquet
+*.csv
+*.bin
+*.h5
+
+# Environment
+.env
+.vim
+.nvimrc
+.vscode/
+.idea/
+.aider*
+
+# Test outputs
+test-output.xml
+.output
+.data
+.pytest_cache/
+.mypy_cache/
+
+# MLflow
+mlruns/
+
+# OS
+*.swp
+.DS_Store
+Thumbs.db
+
+# Qlib generated
+qlib/VERSION.txt
+qlib/data/_libs/expanding.cpp
+qlib/data/_libs/rolling.cpp
+qlib/_version.py
+
+# Special directories
+examples/rl/data/
+examples/rl/checkpoints/
+examples/rl/outputs/
+examples/rl_order_execution/data/
+examples/rl_order_execution/outputs/
+examples/estimator/estimator_example/
+
+# Tags
+tags
+
+# Pretrained models
+./pretrain

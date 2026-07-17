@@ -82,3 +82,6 @@ examples/tdx_data_100.parquet
 # Reference documents (local only)
 *.mhtml
 *.txt
+
+# Local analysis reports in docs
+docs/聚宽380因子复现分析报告.md

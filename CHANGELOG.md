@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **文档**: 添加 `docs/聚宽380因子复现分析报告.md`，记录聚宽380标准因子的复现分析结果，包括脚本评估、问题分析、可复现因子清单及推荐复现路线图
+
 ### Fixed
 
 - **Alpha101**: 修复 `ALPHA101` 因子公式错误，原公式混入 GTJA191 公式，现已还原 WorldQuant 原版区间公式：

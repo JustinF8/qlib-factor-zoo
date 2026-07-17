@@ -86,4 +86,7 @@ examples/tdx_data_100.parquet
 # Local analysis reports in docs
 docs/聚宽380因子复现分析报告.md
 
+# Local test scripts
+_test_indneutralize_proc.py
+
 

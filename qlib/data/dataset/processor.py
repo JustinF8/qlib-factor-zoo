@@ -380,6 +380,58 @@ class HashStockFormat(Processor):
         return HashingStockStorage.from_df(df)
 
 
+class IndustryNeutralize(Processor):
+    """行业中性化：按 [交易日, 申万行业] 去均值（对齐 WorldQuant / 聚宽 IndNeutralize）。
+
+    对 ``fields_group`` 中每个因子列，在每个交易日截面内，减去该股票所属申万行业的
+    组内均值；等价于对行业哑变量做回归取残差。
+
+    行业分类来自通达信(tqcenter) 申万一级('16')（聚宽 IndNeutralize 默认口径）。
+    通过 ``level`` 可切换：``industry``(申万一级) / ``sector``(申万一级) /
+    ``subindustry``(申万二级)。
+
+    数据源不可用或某股票无行业标签时：该股票保持原值（不崩溃、不产生 NaN）。
+
+    典型用法（handler 配置）::
+
+        {"class": "IndustryNeutralize", "kwargs": {"fields_group": "feature"}}
+
+    也可在 GTJA191 / Alpha101 handler 中设置 ``industry_neutralize=True`` 自动注入。
+    """
+
+    def __init__(self, fields_group=None, level: str = "industry"):
+        self.fields_group = fields_group
+        self.level = level
+
+    def __call__(self, df: pd.DataFrame):
+        if not isinstance(self.fields_group, list):
+            self.fields_group = [self.fields_group]
+
+        # 个股(qlib instrument) -> 申万行业标签；延迟导入避免循环依赖
+        from ...contrib.data.industry_map import get_industry_labels
+
+        instruments = df.index.get_level_values(1).unique()
+        labels = get_industry_labels(list(instruments), level=self.level)
+        ind = pd.Series(
+            df.index.get_level_values(1).map(labels), index=df.index, name="_ind"
+        )
+        dt = df.index.get_level_values(0)
+
+        with pd.option_context("mode.chained_assignment", None):
+            for g in self.fields_group:
+                cols = get_group_columns(df, g)
+                if len(cols) == 0:
+                    continue
+                data = df[cols]
+                # 按 [日期, 行业] 求组内均值；无行业标签的行 means 为 NaN
+                means = data.groupby([dt, ind]).transform("mean")
+                result = data - means
+                # 无行业标签(means 为 NaN)的行保持原值，避免误置 0
+                result = result.where(means.notna(), data)
+                df[cols] = result
+        return df
+
+
 class TimeRangeFlt(InstProcessor):
     """
     This is a filter to filter stock.

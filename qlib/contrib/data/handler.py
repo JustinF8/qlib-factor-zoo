@@ -572,12 +572,19 @@ class Alpha101(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
+        industry_neutralize=False,
         **kwargs,
     ):
         if infer_processors is None:
             infer_processors = _DEFAULT_INFER_PROCESSORS
         if learn_processors is None:
             learn_processors = _DEFAULT_LEARN_PROCESSORS
+
+        if industry_neutralize:
+            # 在因子计算后、截面标准化前注入行业中性化（对齐聚宽 IndNeutralize）
+            _ind_proc = {"class": "IndustryNeutralize", "kwargs": {"fields_group": "feature"}}
+            infer_processors = [_ind_proc] + list(infer_processors)
+            learn_processors = [_ind_proc] + list(learn_processors)
 
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
@@ -637,12 +644,19 @@ class GTJA191(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
+        industry_neutralize=False,
         **kwargs,
     ):
         if infer_processors is None:
             infer_processors = _DEFAULT_INFER_PROCESSORS
         if learn_processors is None:
             learn_processors = _DEFAULT_LEARN_PROCESSORS
+
+        if industry_neutralize:
+            # 在因子计算后、截面标准化前注入行业中性化（对齐聚宽 IndNeutralize）
+            _ind_proc = {"class": "IndustryNeutralize", "kwargs": {"fields_group": "feature"}}
+            infer_processors = [_ind_proc] + list(infer_processors)
+            learn_processors = [_ind_proc] + list(learn_processors)
 
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
@@ -727,12 +741,19 @@ class TDXGS(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
+        industry_neutralize=False,
         **kwargs,
     ):
         if infer_processors is None:
             infer_processors = _DEFAULT_INFER_PROCESSORS
         if learn_processors is None:
             learn_processors = _DEFAULT_LEARN_PROCESSORS
+
+        if industry_neutralize:
+            # 在因子计算后、截面标准化前注入行业中性化（对齐聚宽 IndNeutralize）
+            _ind_proc = {"class": "IndustryNeutralize", "kwargs": {"fields_group": "feature"}}
+            infer_processors = [_ind_proc] + list(infer_processors)
+            learn_processors = [_ind_proc] + list(learn_processors)
 
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)

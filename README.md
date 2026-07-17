@@ -47,8 +47,7 @@ qlib-factor-zoo/
 │   └── multi_factor_strategy_30_fast.py  # 向量化加速版
 ├── docs/                    # 文档
 │   ├── 六大因子库使用说明.md
-│   ├── 五因子库调用流程详解.md
-│   └── 聚宽380因子复现分析报告.md
+│   └── 五因子库调用流程详解.md
 ├── LICENSE                  # MIT License (Microsoft)
 └── README.md                # 本文件
 ```

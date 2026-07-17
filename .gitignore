@@ -68,3 +68,17 @@ qlib-factor-zoo-backtest.zip
 
 # Test data (local only)
 tools/test_qlib_data/
+
+# Claude Code local config (personal only)
+CLAUDE.local.md
+CLAUDE.md
+
+# TDX data cache (local only)
+tdx_cache/
+examples/tdx_cache/
+tdx_15stocks.parquet
+examples/tdx_data_100.parquet
+
+# Reference documents (local only)
+*.mhtml
+*.txt

@@ -787,9 +787,10 @@ class Alpha101DL(QlibDataLoader):
         names.append("ALPHA100")
 
         # Alpha #101
-        # Original: (close-open)/(high-low+1e-12)*volume
+        # Original: rank((close - ts_min(low, 12)) / (ts_max(high, 12) - ts_min(low, 12)))
+        # Fixed: was incorrectly using GTJA191 formula, now aligned with WorldQuant whitepaper
         fields.append(
-            "($close-$open)/($high-$low+1e-12)*$volume"
+            "Rank(($close-Min($low,12))/(Max($high,12)-Min($low,12)), 1)"
         )
         names.append("ALPHA101")
 

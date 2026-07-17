@@ -35,8 +35,9 @@ class GTJA191DL(QlibDataLoader):
         names = []
 
         # 001: -1*CORR(RANK(DELTA(LOG(VOLUME),1)), RANK((CLOSE-OPEN)/OPEN), 6)
+        # Fixed: added outer Rank to align with JoinQuant official implementation
         fields.append(
-            "-1*Corr(Rank(Delta(Log($volume+1),1),1), Rank(($close-$open)/$open,1), 6)"
+            "Rank(-1*Corr(Rank(Delta(Log($volume+1),1),6), Rank(($close-$open)/$open,6), 6), 1)"
         )
         names.append("GTJA001")
 
@@ -1257,8 +1258,9 @@ class GTJA191DL(QlibDataLoader):
         names.append("GTJA190")
 
         # 191: CORR(MEAN(VOLUME,20),LOW,5)+((HIGH+LOW)/2)-CLOSE
+        # Fixed: added outer Rank to align with JoinQuant official implementation
         fields.append(
-            "Corr(Mean($volume,20),$low,5)+(($high+$low)/2)-$close"
+            "Rank(Corr(Mean($volume,20),$low,5)+(($high+$low)/2)-$close, 1)"
         )
         names.append("GTJA191")
 
